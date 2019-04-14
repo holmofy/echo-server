@@ -15,60 +15,88 @@
     exit(1);                      \
 }
 
-void* client_fd_process(void* arg) {
-    char buf[BUFFER_SIZE];
-    int read_bytes;
-    int client_fd = *(int *)arg;
-    int err;
-    do
-    {
-        read_bytes = recv(client_fd, buf, BUFFER_SIZE, 0);
-        if(read_bytes < 0) break;
+void *process_client(void *arg) {
+    char buff[BUFFER_SIZE];
+    int client_fd = *(int *) arg;
+    do {
+        int read_bytes = recv(client_fd, buff, BUFFER_SIZE, 0);
+        if (read_bytes <= 0) {
+            printf("Failed to read client");
+            break;
+        }
 
-        printf("Read from client %d: %s \n", client_fd, buf);
-        err = send(client_fd, buf, read_bytes, 0);
-        if(err < 0) break;
-    }
-    while (strncmp(buf, "bye\r", 4) != 0);
+        printf("Read from client %d: %s \n", client_fd, buff);
+        if (send(client_fd, buff, read_bytes, 0) < 0) {
+            printf("Failed to write client");
+            break;
+        }
+        bzero(buff, read_bytes);
+    } while (strncmp(buff, "bye\r", 4) != 0);
     printf("Connection closed: %d\n", client_fd);
     close(client_fd);
     return arg;
 }
 
 int main(int argc, char *argv[]) {
+    /*
+     * check command line arguments
+     */
     if (argc < 2) on_error("Usage: %s [port]\n", argv[0]);
     int port = atoi(argv[1]);
 
-    int server_fd, err;
-    struct sockaddr_in server, client;
+    int server_fd, client_fd;
+    struct sockaddr_in serveraddr, clientaddr;
 
+    /*
+     * socket: create socket
+     */
     server_fd = socket(PF_INET, SOCK_STREAM, 0);
-
     if (server_fd < 0) on_error("Could not create socket\n");
 
-    server.sin_family = AF_INET;
-    server.sin_port = htons(port);
-    server.sin_addr.s_addr = htonl(INADDR_ANY);
+    /*
+     * build the server's Internet address
+     */
+    bzero((char *) &serveraddr, sizeof(serveraddr));
+    serveraddr.sin_family = AF_INET;                   /* this is an Internet address */
+    serveraddr.sin_port = htons(port);                 /* this is the port we will listen on */
+    serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);    /* let the system figure out our IP address */
 
-    err = bind(server_fd, (struct sockaddr *) &server, sizeof(server));
-    if (err < 0) on_error("Could not bind socket\n");
+    /* setsockopt: Handy debugging trick that lets
+     * us rerun the server immediately after we kill it;
+     * otherwise we have to wait about 20 secs.
+     * Eliminates "ERROR on binding: Address already in use" error.
+     */
+    int opt_val = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt_val, sizeof opt_val);
 
-    err = listen(server_fd, 16);
-    if (err < 0) on_error("Could not listen on socket\n");
+    /*
+     * bind: associate socket with a port
+     */
+    if (bind(server_fd, (struct sockaddr *) &serveraddr, sizeof(serveraddr)) < 0) on_error("Could not bind socket\n");
+
+    /*
+     * listen: make this socket ready to accept connection requests
+     * allow 16 requests to queue up
+     */
+    if (listen(server_fd, 16) < 0) on_error("Could not listen on socket\n");
 
     printf("Server is listening on %d\n", port);
 
+    socklen_t client_len = sizeof(clientaddr);
     while (1) {
-        int client_fd;
-        socklen_t client_len = sizeof(client);
-        pthread_t child;
+        client_fd = accept(server_fd, (struct sockaddr *) &clientaddr, &client_len);
+        if (client_fd < 0) on_error("Could not establish new connection\n");
+        printf("Connected: %s:%d, file descriptor: %d\n",
+               inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), client_fd);
 
-        client_fd = accept(server_fd, (struct sockaddr*)&client, &client_len);
-        printf("Connected: %s:%d, fd: %d\n", inet_ntoa(client.sin_addr), ntohs(client.sin_port), client_fd);
-        if ( pthread_create(&child, NULL, client_fd_process, &client_fd) != 0 )
-            perror("Thread creation");
+        /*
+         * create child thread to process client
+         */
+        pthread_t child_tid;
+        if (pthread_create(&child_tid, NULL, process_client, &client_fd) == 0)
+            pthread_detach(child_tid);  /* disassociate from parent thread */
         else
-            pthread_detach(child);  /* disassociate from parent */
+            perror("Thread create failed");
     }
     return 0;
 }

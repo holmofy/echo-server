@@ -14,50 +14,73 @@
     exit(1);                      \
 }
 
-int main (int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
+    /*
+     * check command line arguments
+     */
     if (argc < 2) on_error("Usage: %s [port]\n", argv[0]);
     int port = atoi(argv[1]);
 
-    int server_fd, client_fd, err;
-    struct sockaddr_in server, client;
-    char buf[BUFFER_SIZE];
+    int server_fd, client_fd;
+    struct sockaddr_in serveraddr, clientaddr;
 
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    /*
+     * socket: create socket
+     */
+    server_fd = socket(PF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) on_error("Could not create socket\n");
 
-    server.sin_family = AF_INET;
-    server.sin_port = htons(port);
-    server.sin_addr.s_addr = htonl(INADDR_ANY);
+    /*
+     * build the server's Internet address
+     */
+    bzero((char *) &serveraddr, sizeof(serveraddr));
+    serveraddr.sin_family = AF_INET;                   /* this is an Internet address */
+    serveraddr.sin_port = htons(port);                 /* this is the port we will listen on */
+    serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);    /* let the system figure out our IP address */
 
+    /* setsockopt: Handy debugging trick that lets
+     * us rerun the server immediately after we kill it;
+     * otherwise we have to wait about 20 secs.
+     * Eliminates "ERROR on binding: Address already in use" error.
+     */
     int opt_val = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt_val, sizeof opt_val);
 
-    err = bind(server_fd, (struct sockaddr *) &server, sizeof(server));
-    if (err < 0) on_error("Could not bind socket\n");
+    /*
+     * bind: associate socket with a port
+     */
+    if (bind(server_fd, (struct sockaddr *) &serveraddr, sizeof(serveraddr)) < 0) on_error("Could not bind socket\n");
 
-    err = listen(server_fd, 128);
-    if (err < 0) on_error("Could not listen on socket\n");
+    /*
+     * listen: make this socket ready to accept connection requests
+     * allow 16 requests to queue up
+     */
+    if (listen(server_fd, 16) < 0) on_error("Could not listen on socket\n");
 
     printf("Server is listening on %d\n", port);
 
+    char buff[BUFFER_SIZE];
+    socklen_t client_len = sizeof(clientaddr);
     while (1) {
-        socklen_t client_len = sizeof(client);
-        client_fd = accept(server_fd, (struct sockaddr *) &client, &client_len);
-
+        client_fd = accept(server_fd, (struct sockaddr *) &clientaddr, &client_len);
         if (client_fd < 0) on_error("Could not establish new connection\n");
-        printf("Connected: %s:%d, fd: %d\n", inet_ntoa(client.sin_addr), ntohs(client.sin_port), client_fd);
+        printf("Connected: %s:%d, file descriptor: %d\n",
+               inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), client_fd);
 
         do {
-            int read_bytes = recv(client_fd, buf, BUFFER_SIZE, 0);
+            int read_bytes = recv(client_fd, buff, BUFFER_SIZE, 0);
+            if (read_bytes <= 0) {
+                printf("Failed to read client");
+                break;
+            }
 
-            if (!read_bytes) break; // done reading
-            if (read_bytes < 0) on_error("Client read failed\n");
-
-            printf("Read from client %d: %s \n", client_fd, buf);
-            err = send(client_fd, buf, read_bytes, 0);
-            memset(buf, 0, read_bytes);
-            if (err < 0) on_error("Client write failed\n");
-        } while(strncmp(buf, "bye\r", 4) != 0);
+            printf("Read from client %d: %s \n", client_fd, buff);
+            if (send(client_fd, buff, read_bytes, 0) < 0) {
+                printf("Failed to write client");
+                break;
+            }
+            bzero(buff, read_bytes);
+        } while (strncmp(buff, "bye\r", 4) != 0);
     }
 
     return 0;
