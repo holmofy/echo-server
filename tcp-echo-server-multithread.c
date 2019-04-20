@@ -9,13 +9,14 @@
 #define BUFFER_SIZE 1024
 #define on_error(...) {           \
     fprintf(stderr, __VA_ARGS__); \
+    perror("cause by");           \
     fflush(stderr);               \
     exit(1);                      \
 }
 
-void *process_client(void *arg) {
-    char buff[BUFFER_SIZE];
+void *echo(void *arg) {
     int client_fd = *(int *) arg;
+    char buff[BUFFER_SIZE];
     do {
         int read_bytes = recv(client_fd, buff, BUFFER_SIZE, 0);
         if (read_bytes <= 0) {
@@ -42,8 +43,9 @@ int main(int argc, char *argv[]) {
     if (argc < 2) on_error("Usage: %s [port]\n", argv[0]);
     int port = atoi(argv[1]);
 
-    int server_fd, client_fd;
-    struct sockaddr_in serveraddr, clientaddr;
+    int server_fd, client_fd;                  /* server and client file descriptor*/
+    struct sockaddr_in serveraddr, clientaddr; /* server and client address*/
+    socklen_t client_len = sizeof(clientaddr); /* byte size of client's address */
 
     /*
      * socket: create socket
@@ -55,7 +57,7 @@ int main(int argc, char *argv[]) {
      * build the server's Internet address
      */
     bzero((char *) &serveraddr, sizeof(serveraddr));
-    serveraddr.sin_family = AF_INET;                   /* this is an Internet address */
+    serveraddr.sin_family = AF_INET;                   /* this is an IPv4Internet address */
     serveraddr.sin_port = htons(port);                 /* this is the port we will listen on */
     serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);    /* let the system figure out our IP address */
 
@@ -80,7 +82,6 @@ int main(int argc, char *argv[]) {
 
     printf("Server is listening on %d\n", port);
 
-    socklen_t client_len = sizeof(clientaddr);
     while (1) {
         client_fd = accept(server_fd, (struct sockaddr *) &clientaddr, &client_len);
         if (client_fd < 0) on_error("Could not establish new connection\n");
@@ -91,7 +92,7 @@ int main(int argc, char *argv[]) {
          * create child thread to process client
          */
         pthread_t child_tid;
-        if (pthread_create(&child_tid, NULL, process_client, &client_fd) == 0)
+        if (pthread_create(&child_tid, NULL, echo, &client_fd) == 0)
             pthread_detach(child_tid);  /* disassociate from parent thread */
         else
             perror("Thread create failed");

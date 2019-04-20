@@ -8,8 +8,29 @@
 #define BUFFER_SIZE 1024
 #define on_error(...) {           \
     fprintf(stderr, __VA_ARGS__); \
+    perror("cause by");           \
     fflush(stderr);               \
     exit(1);                      \
+}
+
+void echo(int client_fd) {
+    char buff[BUFFER_SIZE];
+    do {
+        int read_bytes = recv(client_fd, buff, BUFFER_SIZE, 0);
+        if (read_bytes <= 0) {
+            printf("Failed to read client");
+            break;
+        }
+
+        printf("Read from client %d: %s \n", client_fd, buff);
+        if (send(client_fd, buff, read_bytes, 0) < 0) {
+            printf("Failed to write client");
+            break;
+        }
+        bzero(buff, read_bytes);
+    } while (strncmp(buff, "bye\r", 4) != 0);
+    printf("Connection closed: %d\n", client_fd);
+    close(client_fd);
 }
 
 int main(int argc, char *argv[]) {
@@ -19,8 +40,9 @@ int main(int argc, char *argv[]) {
     if (argc < 2) on_error("Usage: %s [port]\n", argv[0]);
     int port = atoi(argv[1]);
 
-    int server_fd, client_fd;
-    struct sockaddr_in serveraddr, clientaddr;
+    int server_fd, client_fd;                  /* server and client file descriptor*/
+    struct sockaddr_in serveraddr, clientaddr; /* server and client address*/
+    socklen_t client_len = sizeof(clientaddr); /* byte size of client's address */
 
     /*
      * socket: create socket
@@ -32,7 +54,7 @@ int main(int argc, char *argv[]) {
      * build the server's Internet address
      */
     bzero((char *) &serveraddr, sizeof(serveraddr));
-    serveraddr.sin_family = AF_INET;                   /* this is an Internet address */
+    serveraddr.sin_family = AF_INET;                   /* this is an IPv4 Internet address */
     serveraddr.sin_port = htons(port);                 /* this is the port we will listen on */
     serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);    /* let the system figure out our IP address */
 
@@ -57,28 +79,13 @@ int main(int argc, char *argv[]) {
 
     printf("Server is listening on %d\n", port);
 
-    char buff[BUFFER_SIZE];
-    socklen_t client_len = sizeof(clientaddr);
     while (1) {
         client_fd = accept(server_fd, (struct sockaddr *) &clientaddr, &client_len);
         if (client_fd < 0) on_error("Could not establish new connection\n");
         printf("Connected: %s:%d, file descriptor: %d\n",
                inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), client_fd);
 
-        do {
-            int read_bytes = recv(client_fd, buff, BUFFER_SIZE, 0);
-            if (read_bytes <= 0) {
-                printf("Failed to read client");
-                break;
-            }
-
-            printf("Read from client %d: %s \n", client_fd, buff);
-            if (send(client_fd, buff, read_bytes, 0) < 0) {
-                printf("Failed to write client");
-                break;
-            }
-            bzero(buff, read_bytes);
-        } while (strncmp(buff, "bye\r", 4) != 0);
+        echo(client_fd);
     }
 
     return 0;
