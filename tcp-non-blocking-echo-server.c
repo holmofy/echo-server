@@ -1,212 +1,326 @@
-#include <stdlib.h>
 #include <stdio.h>
-#include <sys/types.h>
+#include <stdlib.h>
+#include <sys/ioctl.h>
+#include <sys/poll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/event.h>
-#include <sys/time.h>
 #include <errno.h>
+#include <string.h>
 
-#define BUFFER_SIZE 1024
-#define on_error(...) {           \
-    fprintf(stderr, __VA_ARGS__); \
-    fflush(stderr);               \
-    exit(1);                      \
-}
+#define SERVER_PORT 12345
 
-static struct kevent *events;
-static int events_used = 0;
-static int events_alloc = 0;
+#define TRUE 1
+#define FALSE 0
 
-static struct sockaddr_in server;
-static int server_fd, queue;
+int main(int argc, char *argv[])
+{
+    int len, rc, on = 1;
+    int listen_sd = -1, new_sd = -1;
+    int desc_ready, end_server = FALSE, compress_array = FALSE;
+    int close_conn;
+    char buffer[80];
+    struct sockaddr_in6 addr;
+    int timeout;
+    struct pollfd fds[200];
+    int nfds = 1, current_size = 0, i, j;
 
-struct event_data {
-    char buffer[BUFFER_SIZE];
-    int buffer_read;
-    int buffer_write;
-
-    int (*on_read) (struct event_data *self, struct kevent *event);
-    int (*on_write) (struct event_data *self, struct kevent *event);
-};
-
-static void event_server_listen (int port) {
-    int err, flags;
-
-    queue = kqueue();
-    if (queue < 0) on_error("Could not create kqueue: %s\n", strerror(errno));
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) on_error("Could not create server socket: %s\n", strerror(errno))
-
-        server.sin_family = AF_INET;
-    server.sin_port = htons(port);
-    server.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    int opt_val = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt_val, sizeof(opt_val));
-
-    err = bind(server_fd, (struct sockaddr *) &server, sizeof(server));
-    if (err < 0) on_error("Could not bind server socket: %s\n", strerror(errno));
-
-    flags = fcntl(server_fd, F_GETFL, 0);
-    if (flags < 0) on_error("Could not get server socket flags: %s\n", strerror(errno))
-
-        err = fcntl(server_fd, F_SETFL, flags | O_NONBLOCK);
-    if (err < 0) on_error("Could set server socket to be non blocking: %s\n", strerror(errno));
-
-    err = listen(server_fd, SOMAXCONN);
-    if (err < 0) on_error("Could not listen: %s\n", strerror(errno));
-}
-
-static void event_change (int ident, int filter, int flags, void *udata) {
-    struct kevent *e;
-
-    if (events_alloc == 0) {
-        events_alloc = 64;
-        events = malloc(events_alloc * sizeof(struct kevent));
-    }
-    if (events_alloc <= events_used) {
-        events_alloc *= 2;
-        events = realloc(events, events_alloc * sizeof(struct kevent));
+    /*************************************************************/
+    /* Create an AF_INET6 stream socket to receive incoming      */
+    /* connections on                                            */
+    /*************************************************************/
+    listen_sd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (listen_sd < 0)
+    {
+        perror("socket() failed");
+        exit(-1);
     }
 
-    int index = events_used++;
-    e = &events[index];
+    /*************************************************************/
+    /* Allow socket descriptor to be reuseable                   */
+    /*************************************************************/
+    rc = setsockopt(listen_sd, SOL_SOCKET, SO_REUSEADDR,
+                    (char *)&on, sizeof(on));
+    if (rc < 0)
+    {
+        perror("setsockopt() failed");
+        close(listen_sd);
+        exit(-1);
+    }
 
-    e->ident = ident;
-    e->filter = filter;
-    e->flags = flags;
-    e->fflags = 0;
-    e->data = 0;
-    e->udata = udata;
-}
+    /*************************************************************/
+    /* Set socket to be nonblocking. All of the sockets for      */
+    /* the incoming connections will also be nonblocking since   */
+    /* they will inherit that state from the listening socket.   */
+    /*************************************************************/
+    rc = ioctl(listen_sd, FIONBIO, (char *)&on);
+    if (rc < 0)
+    {
+        perror("ioctl() failed");
+        close(listen_sd);
+        exit(-1);
+    }
 
-static void event_loop () {
-    int new_events;
+    /*************************************************************/
+    /* Bind the socket                                           */
+    /*************************************************************/
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_family = AF_INET6;
+    memcpy(&addr.sin6_addr, &in6addr_any, sizeof(in6addr_any));
+    addr.sin6_port = htons(SERVER_PORT);
+    rc = bind(listen_sd, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0)
+    {
+        perror("bind() failed");
+        close(listen_sd);
+        exit(-1);
+    }
 
-    while (1) {
-        new_events = kevent(queue, events, events_used, events, events_alloc, NULL);
-        if (new_events < 0) on_error("Event loop failed: %s\n", strerror(errno));
-        events_used = 0;
+    /*************************************************************/
+    /* Set the listen back log                                   */
+    /*************************************************************/
+    rc = listen(listen_sd, 32);
+    if (rc < 0)
+    {
+        perror("listen() failed");
+        close(listen_sd);
+        exit(-1);
+    }
 
-        for (int i = 0; i < new_events; i++) {
-            struct kevent *e = &events[i];
-            struct event_data *udata = (struct event_data *) e->udata;
+    /*************************************************************/
+    /* Initialize the pollfd structure                           */
+    /*************************************************************/
+    memset(fds, 0, sizeof(fds));
 
-            if (udata == NULL) continue;
-            if (udata->on_write != NULL && e->filter == EVFILT_WRITE) while (udata->on_write(udata, e));
-            if (udata->on_read != NULL && e->filter == EVFILT_READ) while (udata->on_read(udata, e));
+    /*************************************************************/
+    /* Set up the initial listening socket                        */
+    /*************************************************************/
+    fds[0].fd = listen_sd;
+    fds[0].events = POLLIN;
+    /*************************************************************/
+    /* Initialize the timeout to 3 minutes. If no                */
+    /* activity after 3 minutes this program will end.           */
+    /* timeout value is based on milliseconds.                   */
+    /*************************************************************/
+    timeout = (3 * 60 * 1000);
+
+    /*************************************************************/
+    /* Loop waiting for incoming connects or for incoming data   */
+    /* on any of the connected sockets.                          */
+    /*************************************************************/
+    do
+    {
+        /***********************************************************/
+        /* Call poll() and wait 3 minutes for it to complete.      */
+        /***********************************************************/
+        printf("Waiting on poll()...\n");
+        rc = poll(fds, nfds, timeout);
+
+        /***********************************************************/
+        /* Check to see if the poll call failed.                   */
+        /***********************************************************/
+        if (rc < 0)
+        {
+            perror("  poll() failed");
+            break;
         }
+
+        /***********************************************************/
+        /* Check to see if the 3 minute time out expired.          */
+        /***********************************************************/
+        if (rc == 0)
+        {
+            printf("  poll() timed out.  End program.\n");
+            break;
+        }
+
+        /***********************************************************/
+        /* One or more descriptors are readable.  Need to          */
+        /* determine which ones they are.                          */
+        /***********************************************************/
+        current_size = nfds;
+        for (i = 0; i < current_size; i++)
+        {
+            /*********************************************************/
+            /* Loop through to find the descriptors that returned    */
+            /* POLLIN and determine whether it's the listening       */
+            /* or the active connection.                             */
+            /*********************************************************/
+            if (fds[i].revents == 0)
+                continue;
+
+            /*********************************************************/
+            /* If revents is not POLLIN, it's an unexpected result,  */
+            /* log and end the server.                               */
+            /*********************************************************/
+            if (fds[i].revents != POLLIN)
+            {
+                printf("  Error! revents = %d\n", fds[i].revents);
+                end_server = TRUE;
+                break;
+            }
+
+            if (fds[i].fd == listen_sd)
+            {
+                /*******************************************************/
+                /* Listening descriptor is readable.                   */
+                /*******************************************************/
+                printf("  Listening socket is readable\n");
+
+                /*******************************************************/
+                /* Accept all incoming connections that are            */
+                /* queued up on the listening socket before we         */
+                /* loop back and call poll again.                      */
+                /*******************************************************/
+                do
+                {
+                    /*****************************************************/
+                    /* Accept each incoming connection. If               */
+                    /* accept fails with EWOULDBLOCK, then we            */
+                    /* have accepted all of them. Any other              */
+                    /* failure on accept will cause us to end the        */
+                    /* server.                                           */
+                    /*****************************************************/
+                    new_sd = accept(listen_sd, NULL, NULL);
+                    if (new_sd < 0)
+                    {
+                        if (errno != EWOULDBLOCK)
+                        {
+                            perror("  accept() failed");
+                            end_server = TRUE;
+                        }
+                        break;
+                    }
+
+                    /*****************************************************/
+                    /* Add the new incoming connection to the            */
+                    /* pollfd structure                                  */
+                    /*****************************************************/
+                    printf("  New incoming connection - %d\n", new_sd);
+                    fds[nfds].fd = new_sd;
+                    fds[nfds].events = POLLIN;
+                    nfds++;
+
+                    /*****************************************************/
+                    /* Loop back up and accept another incoming          */
+                    /* connection                                        */
+                    /*****************************************************/
+                } while (new_sd != -1);
+            }
+
+            /*********************************************************/
+            /* This is not the listening socket, therefore an        */
+            /* existing connection must be readable                  */
+            /*********************************************************/
+
+            else
+            {
+                printf("  Descriptor %d is readable\n", fds[i].fd);
+                close_conn = FALSE;
+                /*******************************************************/
+                /* Receive all incoming data on this socket            */
+                /* before we loop back and call poll again.            */
+                /*******************************************************/
+
+                do
+                {
+                    /*****************************************************/
+                    /* Receive data on this connection until the         */
+                    /* recv fails with EWOULDBLOCK. If any other         */
+                    /* failure occurs, we will close the                 */
+                    /* connection.                                       */
+                    /*****************************************************/
+                    rc = recv(fds[i].fd, buffer, sizeof(buffer), 0);
+                    if (rc < 0)
+                    {
+                        if (errno != EWOULDBLOCK)
+                        {
+                            perror("  recv() failed");
+                            close_conn = TRUE;
+                        }
+                        break;
+                    }
+
+                    /*****************************************************/
+                    /* Check to see if the connection has been           */
+                    /* closed by the client                              */
+                    /*****************************************************/
+                    if (rc == 0)
+                    {
+                        printf("  Connection closed\n");
+                        close_conn = TRUE;
+                        break;
+                    }
+
+                    /*****************************************************/
+                    /* Data was received                                 */
+                    /*****************************************************/
+                    len = rc;
+                    printf("  %d bytes received\n", len);
+
+                    /*****************************************************/
+                    /* Echo the data back to the client                  */
+                    /*****************************************************/
+                    rc = send(fds[i].fd, buffer, len, 0);
+                    if (rc < 0)
+                    {
+                        perror("  send() failed");
+                        close_conn = TRUE;
+                        break;
+                    }
+
+                } while (TRUE);
+
+                /*******************************************************/
+                /* If the close_conn flag was turned on, we need       */
+                /* to clean up this active connection. This            */
+                /* clean up process includes removing the              */
+                /* descriptor.                                         */
+                /*******************************************************/
+                if (close_conn)
+                {
+                    close(fds[i].fd);
+                    fds[i].fd = -1;
+                    compress_array = TRUE;
+                }
+
+            } /* End of existing connection is readable             */
+        }     /* End of loop through pollable descriptors              */
+
+        /***********************************************************/
+        /* If the compress_array flag was turned on, we need       */
+        /* to squeeze together the array and decrement the number  */
+        /* of file descriptors. We do not need to move back the    */
+        /* events and revents fields because the events will always*/
+        /* be POLLIN in this case, and revents is output.          */
+        /***********************************************************/
+        if (compress_array)
+        {
+            compress_array = FALSE;
+            for (i = 0; i < nfds; i++)
+            {
+                if (fds[i].fd == -1)
+                {
+                    for (j = i; j < nfds; j++)
+                    {
+                        fds[j].fd = fds[j + 1].fd;
+                    }
+                    i--;
+                    nfds--;
+                }
+            }
+        }
+
+    } while (end_server == FALSE); /* End of serving running.    */
+
+    /*************************************************************/
+    /* Clean up all of the sockets that are open                 */
+    /*************************************************************/
+    for (i = 0; i < nfds; i++)
+    {
+        if (fds[i].fd >= 0)
+            close(fds[i].fd);
     }
-}
-
-static int event_flush_write (struct event_data *self, struct kevent *event) {
-    int n = write(event->ident, self->buffer + self->buffer_write, self->buffer_read - self->buffer_write);
-
-    if (n < 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
-        on_error("Write failed (should this be fatal?): %s\n", strerror(errno));
-    }
-
-    if (n == 0) {
-        free(self);
-        close(event->ident);
-        return 0;
-    }
-
-    self->buffer_write += n;
-
-    if (self->buffer_write == self->buffer_read) {
-        self->buffer_read = 0;
-        self->buffer_write = 0;
-    }
-
-    return 0;
-}
-
-static int event_on_read (struct event_data *self, struct kevent *event) {
-    if (self->buffer_read == BUFFER_SIZE) {
-        event_change(event->ident, EVFILT_READ, EV_DISABLE, self);
-        return 0;
-    }
-
-    int n = read(event->ident, self->buffer + self->buffer_read, BUFFER_SIZE - self->buffer_read);
-
-    if (n < 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
-        on_error("Read failed (should this be fatal?): %s\n", strerror(errno));
-    }
-
-    if (n == 0) {
-        free(self);
-        close(event->ident);
-        return 0;
-    }
-
-    if (self->buffer_read == 0) {
-        event_change(event->ident, EVFILT_WRITE, EV_ENABLE, self);
-    }
-
-    self->buffer_read += n;
-    return event_flush_write(self, event);
-}
-
-static int event_on_write (struct event_data *self, struct kevent *event) {
-    if (self->buffer_read == self->buffer_write) {
-        event_change(event->ident, EVFILT_WRITE, EV_DISABLE, self);
-        return 0;
-    }
-
-    return event_flush_write(self, event);
-}
-
-static int event_on_accept (struct event_data *self, struct kevent *event) {
-    struct sockaddr client;
-    socklen_t client_len = sizeof(client);
-
-    int client_fd = accept(server_fd, &client, &client_len);
-    int flags;
-    int err;
-
-    if (client_fd < 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
-        on_error("Accept failed (should this be fatal?): %s\n", strerror(errno));
-    }
-
-    flags = fcntl(client_fd, F_GETFL, 0);
-    if (flags < 0) on_error("Could not get client socket flags: %s\n", strerror(errno));
-
-    err = fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-    if (err < 0) on_error("Could not set client socket to be non blocking: %s\n", strerror(errno));
-
-    struct event_data *client_data = (struct event_data *) malloc(sizeof(struct event_data));
-    client_data->on_read = event_on_read;
-    client_data->on_write = event_on_write;
-
-    event_change(client_fd, EVFILT_READ, EV_ADD | EV_ENABLE, client_data);
-    event_change(client_fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, client_data);
-
-    return 1;
-}
-
-int main (int argc, char *argv[]) {
-    if (argc < 2) on_error("Usage: %s [port]\n", argv[0]);
-
-    int port = atoi(argv[1]);
-
-    struct event_data server = {
-        .on_read = event_on_accept,
-        .on_write = NULL
-    };
-
-    event_server_listen(port);
-    event_change(server_fd, EVFILT_READ, EV_ADD | EV_ENABLE, &server);
-    event_loop();
-
     return 0;
 }
