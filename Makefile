@@ -6,6 +6,8 @@ all: bin/tcp-echo-server \
 	bin/tcp-non-blocking-select-echo-server \
 	bin/tcp-non-blocking-kqueue-echo-server \
 	bin/tcp-non-blocking-libevent-echo-server \
+	bin/tcp-non-blocking-libuv-echo-server \
+	bin/tcp-non-blocking-libev-echo-server \
 	#bin/tcp-non-blocking-epoll-echo-server 
 
 bin/tcp-echo-server: tcp-echo-server.c
@@ -39,12 +41,28 @@ bin/tcp-non-blocking-kqueue-echo-server: tcp-non-blocking-kqueue-echo-server.c
 	-o bin/tcp-non-blocking-kqueue-echo-server
 
 bin/tcp-non-blocking-libevent-echo-server: tcp-non-blocking-libevent-echo-server.c
-	gCC-11 tcp-non-blocking-libevent-echo-server.c \
+	${CC} tcp-non-blocking-libevent-echo-server.c \
 	-g \
 	-I /usr/local/include \
 	-L /usr/local/lib \
 	-levent \
 	-o bin/tcp-non-blocking-libevent-echo-server
+
+bin/tcp-non-blocking-libuv-echo-server: tcp-non-blocking-libuv-echo-server.c
+	${CC} tcp-non-blocking-libuv-echo-server.c \
+	-g \
+	-I /usr/local/include \
+	-L /usr/local/lib \
+	-luv \
+	-o bin/tcp-non-blocking-libuv-echo-server
+
+bin/tcp-non-blocking-libev-echo-server: tcp-non-blocking-libev-echo-server.c
+	${CC} tcp-non-blocking-libev-echo-server.c \
+	-g \
+	-I /usr/local/include \
+	-L /usr/local/lib \
+	-lev \
+	-o bin/tcp-non-blocking-libev-echo-server
 
 clean:
 	rm -r bin/*

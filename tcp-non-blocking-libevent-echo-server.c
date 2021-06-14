@@ -17,13 +17,11 @@
 
 void on_read(struct bufferevent *bev, void *ctx)
 {
-    struct evbuffer *input, *output;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    struct evbuffer *output = bufferevent_get_output(bev);
+
     char *line;
     size_t n;
-    int i;
-
-    input = bufferevent_get_input(bev);
-    output = bufferevent_get_output(bev);
 
     while ((line = evbuffer_readln(input, &n, EVBUFFER_EOL_LF)))
     {
@@ -61,7 +59,7 @@ void on_error(struct bufferevent *bev, short error, void *ctx)
 
 void on_accept(evutil_socket_t listener, short event, void *arg)
 {
-    struct event_base *base = arg;
+    struct event_base *base = (struct event_base *)arg;
     struct sockaddr_storage ss;
     socklen_t slen = sizeof(ss);
     int fd = accept(listener, (struct sockaddr *)&ss, &slen);
@@ -75,9 +73,8 @@ void on_accept(evutil_socket_t listener, short event, void *arg)
     }
     else
     {
-        struct bufferevent *bev;
         evutil_make_socket_nonblocking(fd);
-        bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+        struct bufferevent *bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
         bufferevent_setcb(bev, on_read, NULL, on_error, NULL);
         bufferevent_setwatermark(bev, EV_READ, 0, MAX_LINE);
         bufferevent_enable(bev, EV_READ | EV_WRITE);
@@ -86,25 +83,13 @@ void on_accept(evutil_socket_t listener, short event, void *arg)
 
 int main(int argc, char **argv)
 {
-    setvbuf(stdout, NULL, _IONBF, 0);
+    evutil_socket_t listener = socket(AF_INET, SOCK_STREAM, 0);
+    evutil_make_socket_nonblocking(listener);
 
-    evutil_socket_t listener;
     struct sockaddr_in sin;
-    struct event_base *base;
-    struct event *listener_event;
-
-    base = event_base_new();
-    if (!base)
-        return 1;
-
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = 0;
     sin.sin_port = htons(40713);
-
-    listener = socket(AF_INET, SOCK_STREAM, 0);
-    evutil_make_socket_nonblocking(listener);
-
-    /* win32 junk? */
 
     if (bind(listener, (struct sockaddr *)&sin, sizeof(sin)) < 0)
     {
@@ -118,10 +103,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    listener_event = event_new(base, listener, EV_READ | EV_PERSIST, on_accept, (void *)base);
-    /* check it? */
-    event_add(listener_event, NULL);
+    struct event_base *base = event_base_new();
+    base = event_base_new();
+    if (!base)
+        return 1;
 
+    struct event *listener_event = event_new(base, listener, EV_READ | EV_PERSIST, on_accept, (void *)base);
+    event_add(listener_event, NULL);
     event_base_dispatch(base);
 
     return 0;
