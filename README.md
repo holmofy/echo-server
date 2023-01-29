@@ -12,4 +12,4 @@ Learn socket IO
 * [libev echo server](https://github.com/holmofy/echo-server/blob/master/tcp-non-blocking-libev-echo-server.c)
 * [libuv echo server](https://github.com/holmofy/echo-server/blob/master/tcp-non-blocking-libuv-echo-server.c)
 
-> please refer to [the post](https://blog.hufeifei.cn/2021/06/13/Java/nio/) on my blog
+> please refer to [the post](https://blog.hufeifei.cn/2021/06/Java/nio/) on my blog
