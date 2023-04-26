@@ -18,7 +18,7 @@ int main(int argc, char *argv[])
 {
     int len, rc, on = 1;
     int listen_sd = -1, new_sd = -1;
-    int desc_ready, end_server = FALSE, compress_array = FALSE;
+    int end_server = FALSE, compress_array = FALSE;
     int close_conn;
     char buffer[80];
     struct sockaddr_in6 addr;
