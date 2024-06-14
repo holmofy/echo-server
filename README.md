@@ -13,3 +13,7 @@ Learn socket IO
 * [libuv echo server](https://github.com/holmofy/echo-server/blob/master/tcp-non-blocking-libuv-echo-server.c)
 
 > please refer to [the post](https://blog.hufeifei.cn/2021/06/Java/nio/) on my blog
+
+rust implements:
+* [mio](https://github.com/tokio-rs/mio)
+* [polling](https://github.com/smol-rs/polling)
